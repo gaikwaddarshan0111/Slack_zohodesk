@@ -1,4 +1,3 @@
-
 import os
 import logging
 
@@ -16,118 +15,133 @@ from zoho_ticket import create_zoho_ticket
 # ------------------------------------------
 
 load_dotenv(override=True)
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = App(
-    token=os.environ["SLACK_BOT_TOKEN"]
-)
+app = App(token=os.environ["SLACK_BOT_TOKEN"])
 
-# User token for reading Slack channel threads
-slack_user_client = WebClient(
-    token=os.environ["SLACK_USER_TOKEN"]
-)
+# Read conversation history using an authorized Slack user token.
+slack_user_client = WebClient(token=os.environ["SLACK_USER_TOKEN"])
 
 
 # ------------------------------------------
-# 2. Fetch Slack Thread Description
+# 2. Build Description from Slack Conversation
 # ------------------------------------------
+
+MAX_DESCRIPTION_LENGTH = 3000
+MAX_REPLIES = 5
+MAX_CHAT_MESSAGES = 5
+
+
 
 def get_slack_thread_description(body):
-
+    """Return thread context, or recent top-level messages ending at selection."""
     channel_id = body["channel"]["id"]
     selected_message = body["message"]
+    selected_ts = selected_message["ts"]
 
-    thread_ts = (
-        selected_message.get("thread_ts")
-        or selected_message["ts"]
+    print("\n========== SLACK DEBUG ==========")
+    print("Channel ID:", channel_id)
+    print("Channel metadata:", body.get("channel"))
+    print("Selected message TS:", selected_ts)
+    print("Thread TS:", selected_message.get("thread_ts"))
+    print("Reply count:", selected_message.get("reply_count"))
+    channel_type = body["channel"].get("name", "")
+
+    history_client = slack_user_client
+
+    # Some parent messages have thread_ts equal to their own ts.
+    is_reply = (
+        bool(selected_message.get("thread_ts"))
+        and selected_message["thread_ts"] != selected_ts
     )
-
-    messages = []
-    cursor = None
+    is_thread_parent = int(selected_message.get("reply_count") or 0) > 0
+    is_thread = is_reply or is_thread_parent
 
     try:
-        while True:
+        if is_thread:
+            logger.info("MODE: Slack Thread")
+            thread_ts = selected_message.get("thread_ts") or selected_ts
+            messages = []
+            cursor = None
 
-            params = {
-                "channel": channel_id,
-                "ts": thread_ts,
-                "limit": 100
-            }
+            # Read a bounded number of pages to avoid very long waits.
+            for _ in range(10):
+                params = {"channel": channel_id, "ts": thread_ts, "limit": 100}
+                if cursor:
+                    params["cursor"] = cursor
+
+                response = slack_user_client.conversations_replies(**params)
+                messages.extend(response.get("messages", []))
+                cursor = response.get("response_metadata", {}).get("next_cursor")
+                if not cursor:
+                    break
+
+            messages.sort(key=lambda message: float(message["ts"]))
+            if not messages:
+                return selected_message.get("text", "")[:MAX_DESCRIPTION_LENGTH]
+
+            parent = next((m for m in messages if m["ts"] == thread_ts), messages[0])
+            replies = [m for m in messages if m["ts"] != parent["ts"]]
+            parts = ["Original Slack Message:", parent.get("text", "").strip()]
+
+            recent_replies = [m.get("text", "").strip() for m in replies[-MAX_REPLIES:]]
+            recent_replies = [text for text in recent_replies if text]
+            if recent_replies:
+                parts.extend(["Latest Thread Replies:", *recent_replies])
 
             if cursor:
-                params["cursor"] = cursor
+                parts.append("[Thread was too long to retrieve completely.]")
 
-            response = (
-                slack_user_client.conversations_replies(
-                    **params
-                )
-            )
+        else:
+            logger.info("MODE: Regular Slack Conversation")
+            messages = [selected_message]
+            cursor = None
 
-            messages.extend(
-                response.get("messages", [])
-            )
+            # Earlier messages only: don't include messages posted after selection.
+            for _ in range(5):
+                if len(messages) >= MAX_CHAT_MESSAGES:
+                    break
 
-            cursor = (
-                response.get("response_metadata", {})
-                .get("next_cursor")
-            )
+                params = {
+                    "channel": channel_id,
+                    "latest": selected_ts,
+                    "inclusive": False,
+                    "limit": 100,
+                }
+                if cursor:
+                    params["cursor"] = cursor
 
-            if not cursor:
-                break
+                response = slack_user_client.conversations_history(**params)
+                for msg in response.get("messages", []):
+                    # Only top-level human-authored text, no system events.
+                    if msg.get("subtype") or not msg.get("text", "").strip():
+                        continue
+                    if msg.get("thread_ts") and msg["thread_ts"] != msg["ts"]:
+                        continue
+                    if msg["ts"] == selected_ts:
+                        continue
+                    messages.append(msg)
+                    if len(messages) >= MAX_CHAT_MESSAGES:
+                        break
 
-        if not messages:
-            return selected_message.get(
-                "text", ""
-            )[:3000]
+                cursor = response.get("response_metadata", {}).get("next_cursor")
+                if not cursor:
+                    break
 
-        # Sort messages chronologically
-        messages.sort(
-            key=lambda msg: float(msg["ts"])
-        )
+            messages.sort(key=lambda message: float(message["ts"]))
+            parts = ["Recent Slack Conversation:"]
+            parts.extend(m["text"].strip() for m in messages if m.get("text", "").strip())
 
-        parent = messages[0]
-        replies = messages[1:]
-
-        # Get latest 5 replies
-        latest_replies = replies[-5:]
-
-        description = (
-            "Original Slack Message:\n"
-            + parent.get("text", "")
-        )
-
-        if latest_replies:
-
-            description += (
-                "\n\nLatest Thread Replies:\n"
-            )
-
-            for reply in latest_replies:
-
-                text = reply.get(
-                    "text", ""
-                ).strip()
-
-                if text:
-                    description += f"\n\n {text}"
-                
-
-        # Slack text input limit
-        return description[:3000]
+        description = "\n\n".join(parts)
+        if len(description) > MAX_DESCRIPTION_LENGTH:
+            description = "[Earlier conversation truncated]\n\n" + description[-2900:]
+        logger.info("Description generated (%d characters)", len(description))
+        return description
 
     except SlackApiError as error:
-
-        logger.error(
-            "Thread retrieval failed: %s",
-            error.response.get("error")
-        )
-
-        # Fallback to selected message
-        return selected_message.get(
-            "text", ""
-        )[:3000]
+        logger.error("Slack conversation retrieval failed: %s", error.response.get("error"))
+        return selected_message.get("text", "")[:MAX_DESCRIPTION_LENGTH]
 
 
 # ------------------------------------------
@@ -297,8 +311,7 @@ def create_ticket(ack, body, client):
         loading_view = build_status_modal(
             title="Zoho Desk Ticket",
             message=(
-                "Fetching the latest "
-                "Slack thread messages..."
+                "Fetching Slack conversation..."
             )
         )
 
@@ -319,7 +332,7 @@ def create_ticket(ack, body, client):
         )
 
         logger.info(
-            "Thread description retrieved. "
+            "Conversation description retrieved. "
             "Length: %s characters",
             len(description)
         )
