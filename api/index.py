@@ -1,4 +1,10 @@
 import os
+import sys
+
+
+# Ensure root directory is in Python path so `bot`, `zoho_ticket`, and `zoho_token` import cleanly
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from fastapi import FastAPI, Request
 from slack_bolt import App
 from slack_bolt.adapter.fastapi import SlackRequestHandler
