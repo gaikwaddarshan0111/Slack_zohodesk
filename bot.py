@@ -40,16 +40,6 @@ def get_slack_thread_description(body):
     selected_message = body["message"]
     selected_ts = selected_message["ts"]
 
-    print("\n========== SLACK DEBUG ==========")
-    print("Channel ID:", channel_id)
-    print("Channel metadata:", body.get("channel"))
-    print("Selected message TS:", selected_ts)
-    print("Thread TS:", selected_message.get("thread_ts"))
-    print("Reply count:", selected_message.get("reply_count"))
-    channel_type = body["channel"].get("name", "")
-
-    history_client = slack_user_client
-
     # Some parent messages have thread_ts equal to their own ts.
     is_reply = (
         bool(selected_message.get("thread_ts"))
@@ -149,115 +139,131 @@ def get_slack_thread_description(body):
 # ------------------------------------------
 
 def build_ticket_modal(description=""):
-
+    """Build the redesigned, Slack-native ticket creation form."""
     description_element = {
         "type": "plain_text_input",
         "action_id": "description",
-        "multiline": True
+        "multiline": True,
+        "max_length": MAX_DESCRIPTION_LENGTH,
+        "placeholder": {
+            "type": "plain_text",
+            "text": "Enter or review the issue description"
+        }
     }
-
     if description:
-        description_element["initial_value"] = (
-            description[:3000]
-        )
+        description_element["initial_value"] = description[:MAX_DESCRIPTION_LENGTH]
 
     return {
         "type": "modal",
         "callback_id": "ticket_modal",
-
-        "title": {
-            "type": "plain_text",
-            "text": "Zoho Desk Ticket"
-        },
-
-        "submit": {
-            "type": "plain_text",
-            "text": "Create Ticket"
-        },
-
-        "close": {
-            "type": "plain_text",
-            "text": "Close"
-        },
-
+        "title": {"type": "plain_text", "text": "Create Support Ticket"},
+        "submit": {"type": "plain_text", "text": "Create Ticket"},
+        "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [
-
-            # Subject
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        ":ticket: *Zoho Desk Support*\n"
+                        "Create a support ticket from this Slack conversation."
+                    )
+                }
+            },
+            {
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": (
+                        ":information_source: *Conversation auto-filled.* "
+                        "Review and edit the details before creating the ticket."
+                    )
+                }]
+            },
+            {"type": "divider"},
             {
                 "type": "input",
                 "block_id": "subject_block",
-
-                "label": {
-                    "type": "plain_text",
-                    "text": "Subject"
-                },
-
+                "label": {"type": "plain_text", "text": "Ticket Subject"},
                 "element": {
                     "type": "plain_text_input",
-                    "action_id": "subject"
+                    "action_id": "subject",
+                    "max_length": 200,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "e.g. SMS History not visible in Zoho CRM"
+                    }
                 }
             },
-
-            # Description
             {
                 "type": "input",
                 "block_id": "description_block",
-
-                "label": {
+                "label": {"type": "plain_text", "text": "Conversation Description"},
+                "hint": {
                     "type": "plain_text",
-                    "text": "Description"
+                    "text": "Auto-filled from Slack. Editable before submission."
                 },
-
                 "element": description_element
             },
-
-            # Customer Email
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*Ticket Details*"}
+            },
             {
                 "type": "input",
                 "block_id": "email_block",
-
-                "label": {
-                    "type": "plain_text",
-                    "text": "Customer Email"
-                },
-
+                "label": {"type": "plain_text", "text": "Customer Email"},
                 "element": {
                     "type": "email_text_input",
-                    "action_id": "email"
+                    "action_id": "email",
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "customer@example.com"
+                    }
                 }
             },
-
-            # Priority
             {
                 "type": "input",
                 "block_id": "priority_block",
-
-                "label": {
-                    "type": "plain_text",
-                    "text": "Priority"
-                },
-
+                "label": {"type": "plain_text", "text": "Ticket Priority"},
                 "element": {
                     "type": "static_select",
                     "action_id": "priority",
-
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "Select ticket priority"
+                    },
+                    "initial_option": {
+                        "text": {"type": "plain_text", "text": "Medium"},
+                        "value": "Medium"
+                    },
                     "options": [
                         {
-                            "text": {
-                                "type": "plain_text",
-                                "text": priority
-                            },
-
+                            "text": {"type": "plain_text", "text": priority},
                             "value": priority
                         }
-
-                        for priority in [
-                            "High",
-                            "Medium",
-                            "Low"
-                        ]
+                        for priority in ["High", "Medium", "Low"]
                     ]
                 }
+            },
+            {
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": ":office: *Department:* Ayon (configured in Zoho Desk)"
+                }]
+            },
+            {"type": "divider"},
+            {
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": (
+                        ":lock: Remove unrelated or sensitive content "
+                        "from the description before submitting."
+                    )
+                }]
             }
         ]
     }
